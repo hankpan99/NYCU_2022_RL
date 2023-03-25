@@ -43,6 +43,36 @@ class Policy(nn.Module):
         
         ########## YOUR CODE HERE (5~10 lines) ##########
 
+        # shared layer
+        self.input_layer = nn.Linear(self.observation_dim, self.hidden_size, device='cuda')
+        nn.init.kaiming_uniform_(self.input_layer.weight)
+        tmp_activation = nn.Sigmoid()
+
+        # action layers
+        self.action_layer1 = nn.Sequential()
+        tmp_linear = nn.Linear(self.hidden_size, self.hidden_size, device='cuda')
+        nn.init.kaiming_uniform_(tmp_linear.weight)
+        self.action_layer1.add_module('linear', tmp_linear)
+        self.action_layer1.add_module('activation', tmp_activation)
+
+        self.action_output_layer = nn.Sequential()
+        tmp_linear = nn.Linear(self.hidden_size, self.action_dim, device='cuda')
+        nn.init.kaiming_uniform_(tmp_linear.weight)
+        self.action_output_layer.add_module('linear', tmp_linear)
+        self.action_output_layer.add_module('activation', tmp_activation)
+
+        # state layers
+        self.state_layer1 = nn.Sequential()
+        tmp_linear = nn.Linear(self.hidden_size, self.hidden_size, device='cuda')
+        nn.init.kaiming_uniform_(tmp_linear.weight)
+        self.state_layer1.add_module('linear', tmp_linear)
+        self.state_layer1.add_module('activation', tmp_activation)
+
+        self.state_output_layer = nn.Sequential()
+        tmp_linear = nn.Linear(self.hidden_size, 1, device='cuda')
+        nn.init.kaiming_uniform_(tmp_linear.weight)
+        self.state_output_layer.add_module('linear', tmp_linear)
+        self.state_output_layer.add_module('activation', tmp_activation)
         
         ########## END OF YOUR CODE ##########
         
@@ -61,11 +91,19 @@ class Policy(nn.Module):
         
         ########## YOUR CODE HERE (3~5 lines) ##########
 
+        # policy network forward pass
+        action_out = self.input_layer(state)
+        action_out = self.action_layer1(action_out)
+        action_prob = self.action_output_layer(action_out)
+
+        # value network forward pass
+        state_out = self.input_layer(state)
+        state_out = self.state_layer1(state_out)
+        state_value = self.state_output_layer(state_out)
 
         ########## END OF YOUR CODE ##########
 
         return action_prob, state_value
-
 
     def select_action(self, state):
         """
@@ -77,7 +115,11 @@ class Policy(nn.Module):
         """
         
         ########## YOUR CODE HERE (3~5 lines) ##########
-
+        state = torch.from_numpy(state).unsqueeze(0).to('cuda')
+        action_prob, state_value = self.forward(state)
+        action_prob, state_value = action_prob.cpu(), state_value.cpu()
+        m = Categorical(action_prob)
+        action = m.sample()
 
         ########## END OF YOUR CODE ##########
         
@@ -85,7 +127,6 @@ class Policy(nn.Module):
         self.saved_actions.append(SavedAction(m.log_prob(action), state_value))
 
         return action.item()
-
 
     def calculate_loss(self, gamma=0.999):
         """
@@ -105,6 +146,20 @@ class Policy(nn.Module):
 
         ########## YOUR CODE HERE (8-15 lines) ##########
 
+        # calculate rewards-to-go
+        for i in range(len(self.rewards)-1, -1, -1):
+            R += (gamma ** i) * self.rewards[i]
+            returns.insert(0, R)
+
+        # calculate policy, values losses
+        for cnt, ((pred_log_prob, pred_value), sample_return) in enumerate(zip(saved_actions, returns)):
+            policy_loss = -(gamma ** cnt) * sample_return * pred_log_prob
+            policy_losses.append(policy_loss)
+
+            value_loss = (torch.tensor([sample_return]) - pred_value) ** 2
+            value_losses.append(value_loss)
+
+        loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum() / len(returns)
 
         ########## END OF YOUR CODE ##########
         
@@ -122,11 +177,11 @@ class GAE:
         self.num_steps = num_steps          # set num_steps = None to adapt full batch
 
     def __call__(self, rewards, values, done):
-    """
+        """
         Implement Generalized Advantage Estimation (GAE) for your value prediction
         TODO (1): Pass correct corresponding inputs (rewards, values, and done) into the function arguments
         TODO (2): Calculate the Generalized Advantage Estimation and return the obtained value
-    """
+        """
 
         ########## YOUR CODE HERE (8-15 lines) ##########
 
@@ -151,7 +206,7 @@ def train(lr=0.01):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # Learning rate scheduler (optional)
-    # scheduler = Scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
+    scheduler = Scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
     
     # EWMA reward for tracking the learning progress
     ewma_reward = 0
@@ -169,7 +224,27 @@ def train(lr=0.01):
         # For each episode, only run 9999 steps to avoid entering infinite loop during the learning process
         
         ########## YOUR CODE HERE (10-15 lines) ##########
+
+        optimizer.zero_grad()
+
+        # simulate
+        max_episode_len = 10000
+        for t in range(max_episode_len):
+            action = model.select_action(state)
+            state, reward, done, _ = env.step(action)
+            model.rewards.append(reward)
+            ep_reward += reward
+
+            if done:
+                break
         
+        # gradient descent
+        loss = model.calculate_loss()
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        model.clear_memory()
         
         ########## END OF YOUR CODE ##########
             
@@ -177,8 +252,13 @@ def train(lr=0.01):
         ewma_reward = 0.05 * ep_reward + (1 - 0.05) * ewma_reward
         print('Episode {}\tlength: {}\treward: {}\t ewma reward: {}'.format(i_episode, t, ep_reward, ewma_reward))
 
-        #Try to use Tensorboard to record the behavior of your implementation 
+        # Try to use Tensorboard to record the behavior of your implementation 
         ########## YOUR CODE HERE (4-5 lines) ##########
+
+        writer.add_scalar('Reward/ep_reward', ep_reward, i_episode)
+        writer.add_scalar('Reward/ewma_reward', ewma_reward, i_episode)
+        writer.add_scalar('Training/loss', loss, i_episode)
+        writer.add_scalar('Training/learning rate', scheduler.get_lr()[0], i_episode)
 
         ########## END OF YOUR CODE ##########
 
