@@ -1,2 +1,9 @@
 # ignore pdf files
 *.pdf
+
+# ignore submit folder
+0812252*/
+
+# HW1: ignore gradient_descent.py, tensorboard log directory
+hw1_gradient_descent.py
+tb_record/

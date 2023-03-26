@@ -19,7 +19,7 @@ from torch.utils.tensorboard import SummaryWriter
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
 # Define a tensorboard writer
-writer = SummaryWriter("./tb_record/reinforce")
+writer = SummaryWriter("./tb_record/reinforce_baseline")
         
 class Policy(nn.Module):
     """
@@ -153,7 +153,7 @@ class Policy(nn.Module):
 
         # calculate policy, values losses
         for cnt, ((pred_log_prob, pred_value), sample_return) in enumerate(zip(saved_actions, returns)):
-            policy_loss = -(gamma ** cnt) * sample_return * pred_log_prob
+            policy_loss = -(gamma ** cnt) * (sample_return - pred_value) * pred_log_prob
             policy_losses.append(policy_loss)
 
             value_loss = (torch.tensor([sample_return]) - pred_value) ** 2
@@ -244,10 +244,10 @@ def train(lr=0.01):
         ########## END OF YOUR CODE ##########
 
         # check if we have "solved" the cart pole problem, use 120 as the threshold in LunarLander-v2
-        if ewma_reward > env.spec.reward_threshold:
+        if ewma_reward > 120:
             if not os.path.isdir("./preTrained"):
                 os.mkdir("./preTrained")
-            torch.save(model.state_dict(), './preTrained/CartPole_{}.pth'.format(lr))
+            torch.save(model.state_dict(), './preTrained/LunarLander-v2_{}.pth'.format(lr))
             print("Solved! Running reward is now {} and "
                   "the last episode runs to {} time steps!".format(ewma_reward, t))
             break
@@ -283,8 +283,8 @@ if __name__ == '__main__':
     # For reproducibility, fix the random seed
     random_seed = 10  
     lr = 0.01
-    env = gym.make('CartPole-v0')
+    env = gym.make('LunarLander-v2')
     env.seed(random_seed)  
     torch.manual_seed(random_seed)  
     train(lr)
-    test(f'CartPole_{lr}.pth')
+    test(f'LunarLander-v2_{lr}.pth')
