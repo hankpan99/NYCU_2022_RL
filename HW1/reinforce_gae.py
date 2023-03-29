@@ -20,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
 # Define a tensorboard writer
-writer = SummaryWriter(f"./tb_record/reinforce_baseline/{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}")
+writer = SummaryWriter(f"./tb_record/reinforce_gae/{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}")
         
 class Policy(nn.Module):
     """
@@ -43,37 +43,29 @@ class Policy(nn.Module):
         self.double()
         
         ########## YOUR CODE HERE (5~10 lines) ##########
-
+        
         # shared layer
-        self.input_layer = nn.Linear(self.observation_dim, self.hidden_size, device='cuda')
-        nn.init.kaiming_uniform_(self.input_layer.weight)
-        tmp_activation = nn.Sigmoid()
+        self.input_layer = nn.Sequential(
+            nn.Linear(self.observation_dim, self.hidden_size, device='cuda'),
+            nn.Dropout(0.1),
+            nn.PReLU(device='cuda'))
 
         # action layers
-        self.action_layer1 = nn.Sequential()
-        tmp_linear = nn.Linear(self.hidden_size, self.hidden_size, device='cuda')
-        nn.init.kaiming_uniform_(tmp_linear.weight)
-        self.action_layer1.add_module('linear', tmp_linear)
-        self.action_layer1.add_module('activation', tmp_activation)
+        self.action_layers = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size, device='cuda'),
+            nn.Dropout(0.1),
+            nn.PReLU(device='cuda'),
+            nn.Linear(self.hidden_size, self.action_dim, device='cuda'),
+            nn.Softmax()
+        )
 
-        self.action_output_layer = nn.Sequential()
-        tmp_linear = nn.Linear(self.hidden_size, self.action_dim, device='cuda')
-        nn.init.kaiming_uniform_(tmp_linear.weight)
-        self.action_output_layer.add_module('linear', tmp_linear)
-        self.action_output_layer.add_module('activation', tmp_activation)
-
-        # state layers
-        self.state_layer1 = nn.Sequential()
-        tmp_linear = nn.Linear(self.hidden_size, self.hidden_size, device='cuda')
-        nn.init.kaiming_uniform_(tmp_linear.weight)
-        self.state_layer1.add_module('linear', tmp_linear)
-        self.state_layer1.add_module('activation', tmp_activation)
-
-        self.state_output_layer = nn.Sequential()
-        tmp_linear = nn.Linear(self.hidden_size, 1, device='cuda')
-        nn.init.kaiming_uniform_(tmp_linear.weight)
-        self.state_output_layer.add_module('linear', tmp_linear)
-        self.state_output_layer.add_module('activation', tmp_activation)
+        # value layers
+        self.value_layers = nn.Sequential(
+            nn.Linear(self.hidden_size, self.hidden_size, device='cuda'),
+            nn.Dropout(0.1),
+            nn.PReLU(device='cuda'),
+            nn.Linear(self.hidden_size, 1, device='cuda')
+        )
         
         ########## END OF YOUR CODE ##########
         
@@ -92,15 +84,13 @@ class Policy(nn.Module):
         
         ########## YOUR CODE HERE (3~5 lines) ##########
 
+        out = self.input_layer(state)
+
         # policy network forward pass
-        action_out = self.input_layer(state)
-        action_out = self.action_layer1(action_out)
-        action_prob = self.action_output_layer(action_out)
+        action_prob = self.action_layers(out)
 
         # value network forward pass
-        state_out = self.input_layer(state)
-        state_out = self.state_layer1(state_out)
-        state_value = self.state_output_layer(state_out)
+        state_value = self.value_layers(out)
 
         ########## END OF YOUR CODE ##########
 
@@ -147,29 +137,84 @@ class Policy(nn.Module):
 
         ########## YOUR CODE HERE (8-15 lines) ##########
 
-        # calculate rewards-to-go
-        for i in range(len(self.rewards)-1, -1, -1):
-            R += (gamma ** i) * self.rewards[i]
-            returns.insert(0, R)
+        # calculate returns
+        returns = self.calculate_returns(gamma)
+        returns.detach()
 
-        # calculate policy, values losses
-        for cnt, ((pred_log_prob, pred_value), sample_return) in enumerate(zip(saved_actions, returns)):
-            policy_loss = -(gamma ** cnt) * (sample_return - pred_value) * pred_log_prob
-            policy_losses.append(policy_loss)
+        log_prob_actions = torch.cat([i.log_prob for i in saved_actions]).squeeze()
+        pred_value = torch.cat([i.value for i in saved_actions]).squeeze()
 
-            value_loss = (torch.tensor([sample_return]) - pred_value) ** 2
-            value_losses.append(value_loss)
+        scale_arr = torch.empty(len(returns))
+        powers = torch.arange(len(returns))
+        scale_arr.fill_(gamma)
+        scale_arr = torch.pow(scale_arr, powers)
 
-        loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum() / len(returns)
+        # caculate advantages
+        gae = GAE(gamma, 0.99, None)
+        advantages = gae(self.rewards, pred_value, len(returns))
+        advantages = advantages.detach()
+
+        # caculate loss
+        policy_losses = -(advantages * log_prob_actions * scale_arr).sum()
+        value_losses = F.smooth_l1_loss(pred_value, returns).sum()
+
+        loss = policy_losses + value_losses
 
         ########## END OF YOUR CODE ##########
         
         return loss
 
+    def calculate_returns(self, gamma):
+        returns = []
+        R = 0
+
+        for r in reversed(self.rewards):
+            R = r + R * gamma
+            returns.insert(0, R)
+
+        returns = torch.tensor(returns)
+        returns = (returns - returns.mean()) / returns.std()
+
+        return returns
+
     def clear_memory(self):
         # reset rewards and action buffer
         del self.rewards[:]
         del self.saved_actions[:]
+
+
+class GAE:
+    def __init__(self, gamma, lambda_, num_steps):
+        self.gamma = gamma
+        self.lambda_ = lambda_
+        self.num_steps = num_steps          # set num_steps = None to adapt full batch
+
+    def __call__(self, rewards, values, done):
+        """
+        Implement Generalized Advantage Estimation (GAE) for your value prediction
+        TODO (1): Pass correct corresponding inputs (rewards, values, and done) into the function arguments
+        TODO (2): Calculate the Generalized Advantage Estimation and return the obtained value
+        """
+
+        ########## YOUR CODE HERE (8-15 lines) ##########
+
+        # caculate advantages
+        advantages = []
+        advantage = 0
+        next_value = 0
+        
+        for r, v in zip(reversed(rewards), reversed(values)):
+            td_error = r + next_value * self.gamma - v
+            advantage = td_error + advantage * self.gamma * self.lambda_
+            next_value = v
+            advantages.insert(0, advantage)
+            
+        advantages = torch.tensor(advantages)
+        advantages = (advantages - advantages.mean()) / advantages.std()
+
+        return advantages
+        
+        ########## END OF YOUR CODE ##########
 
 
 def train(lr=0.01):
@@ -188,7 +233,7 @@ def train(lr=0.01):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # Learning rate scheduler (optional)
-    scheduler = Scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
+    # scheduler = Scheduler.StepLR(optimizer, step_size=200, gamma=0.9)
     
     # EWMA reward for tracking the learning progress
     ewma_reward = 0
@@ -224,7 +269,7 @@ def train(lr=0.01):
         loss = model.calculate_loss()
         loss.backward()
         optimizer.step()
-        scheduler.step()
+        # scheduler.step()
 
         model.clear_memory()
         
@@ -240,7 +285,7 @@ def train(lr=0.01):
         writer.add_scalar('Reward/ep_reward', ep_reward, i_episode)
         writer.add_scalar('Reward/ewma_reward', ewma_reward, i_episode)
         writer.add_scalar('Training/loss', loss, i_episode)
-        writer.add_scalar('Training/learning rate', scheduler.get_lr()[0], i_episode)
+        # writer.add_scalar('Training/learning rate', scheduler.get_lr()[0], i_episode)
 
         ########## END OF YOUR CODE ##########
 
@@ -248,7 +293,7 @@ def train(lr=0.01):
         if ewma_reward > 120:
             if not os.path.isdir("./preTrained"):
                 os.mkdir("./preTrained")
-            torch.save(model.state_dict(), './preTrained/baseline_LunarLander-v2_{}.pth'.format(lr))
+            torch.save(model.state_dict(), './preTrained/gae_LunarLander-v2_{}.pth'.format(lr))
             print("Solved! Running reward is now {} and "
                   "the last episode runs to {} time steps!".format(ewma_reward, t))
             break
@@ -283,9 +328,9 @@ def test(name, n_episodes=10):
 if __name__ == '__main__':
     # For reproducibility, fix the random seed
     random_seed = 10  
-    lr = 0.01
+    lr = 0.0005
     env = gym.make('LunarLander-v2')
     env.seed(random_seed)  
     torch.manual_seed(random_seed)  
     train(lr)
-    test(f'baseline_LunarLander-v2_{lr}.pth')
+    test(f'gae_LunarLander-v2_{lr}.pth')

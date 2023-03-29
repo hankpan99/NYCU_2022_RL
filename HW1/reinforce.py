@@ -6,6 +6,7 @@ import gym
 from itertools import count
 from collections import namedtuple
 import numpy as np
+import datetime
 
 import torch
 import torch.nn as nn
@@ -19,7 +20,7 @@ from torch.utils.tensorboard import SummaryWriter
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
 # Define a tensorboard writer
-writer = SummaryWriter("./tb_record/reinforce")
+writer = SummaryWriter(f"./tb_record/reinforce/{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}")
         
 class Policy(nn.Module):
     """
