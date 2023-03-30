@@ -147,24 +147,40 @@ class Policy(nn.Module):
 
         ########## YOUR CODE HERE (8-15 lines) ##########
 
-        # calculate rewards-to-go
-        for i in range(len(self.rewards)-1, -1, -1):
-            R += (gamma ** i) * self.rewards[i]
-            returns.insert(0, R)
+        # calculate returns
+        returns = self.calculate_returns(gamma)
+        returns.detach()
 
-        # calculate policy, values losses
-        for cnt, ((pred_log_prob, pred_value), sample_return) in enumerate(zip(saved_actions, returns)):
-            policy_loss = -(gamma ** cnt) * sample_return * pred_log_prob
-            policy_losses.append(policy_loss)
+        log_prob_actions = torch.cat([i.log_prob for i in saved_actions]).squeeze()
+        pred_value = torch.cat([i.value for i in saved_actions]).squeeze()
 
-            value_loss = (torch.tensor([sample_return]) - pred_value) ** 2
-            value_losses.append(value_loss)
+        scale_arr = torch.empty(len(returns))
+        powers = torch.arange(len(returns))
+        scale_arr.fill_(gamma)
+        scale_arr = torch.pow(scale_arr, powers)
 
-        loss = torch.stack(policy_losses).sum() + torch.stack(value_losses).sum() / len(returns)
+        # caculate loss
+        policy_losses = -(returns * log_prob_actions * scale_arr).sum()
+        value_losses = F.smooth_l1_loss(pred_value, returns).sum()
+
+        loss = policy_losses + value_losses
 
         ########## END OF YOUR CODE ##########
         
         return loss
+
+    def calculate_returns(self, gamma):
+        returns = []
+        R = 0
+
+        for r in reversed(self.rewards):
+            R = r + R * gamma
+            returns.insert(0, R)
+
+        returns = torch.tensor(returns)
+        returns = (returns - returns.mean()) / returns.std()
+
+        return returns
 
     def clear_memory(self):
         # reset rewards and action buffer

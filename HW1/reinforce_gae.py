@@ -7,6 +7,7 @@ from itertools import count
 from collections import namedtuple
 import numpy as np
 import datetime
+import argparse
 
 import torch
 import torch.nn as nn
@@ -20,8 +21,20 @@ from torch.utils.tensorboard import SummaryWriter
 SavedAction = namedtuple('SavedAction', ['log_prob', 'value'])
 
 # Define a tensorboard writer
-writer = SummaryWriter(f"./tb_record/reinforce_gae/{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}")
+folder_name = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
+writer = SummaryWriter(f"./tb_record/reinforce_gae/{folder_name}")
         
+def parse_args():
+    parser = argparse.ArgumentParser(description='argument settings')
+    parser.add_argument('-r', '--render', help='type = "bool", render env flag in testing, default = False', action='store_true')
+    parser.add_argument('-s', '--seed', help='type = "int", set random seed, default = 10', type=int, default=10)
+    parser.add_argument('-lr', '--learnrate', help='type = "float", set learning rate, default = 0.001', type=float, default=0.001)
+    parser.add_argument('-ld', '--gaelambda', help='type = "float", set learning rate, default = 0.99', type=float, default=0.99)
+
+    args = parser.parse_args()
+
+    return args
+
 class Policy(nn.Module):
     """
         Implement both policy network and the value network in one model
@@ -32,7 +45,7 @@ class Policy(nn.Module):
             1. Initialize the network (including the GAE parameters, shared layer(s), the action layer(s), and the value layer(s))
             2. Random weight initialization of each layer
     """
-    def __init__(self):
+    def __init__(self, gae_lambda):
         super(Policy, self).__init__()
         
         # Extract the dimensionality of state and action spaces
@@ -66,6 +79,9 @@ class Policy(nn.Module):
             nn.PReLU(device='cuda'),
             nn.Linear(self.hidden_size, 1, device='cuda')
         )
+        
+        # gae labmda
+        self.gae_labmda = gae_lambda
         
         ########## END OF YOUR CODE ##########
         
@@ -150,7 +166,7 @@ class Policy(nn.Module):
         scale_arr = torch.pow(scale_arr, powers)
 
         # caculate advantages
-        gae = GAE(gamma, 0.99, None)
+        gae = GAE(gamma, self.gae_labmda, None)
         advantages = gae(self.rewards, pred_value, len(returns))
         advantages = advantages.detach()
 
@@ -217,7 +233,7 @@ class GAE:
         ########## END OF YOUR CODE ##########
 
 
-def train(lr=0.01):
+def train(gae_labmda, lr=0.01):
     """
         Train the model using SGD (via backpropagation)
         TODO (1): In each episode, 
@@ -229,11 +245,11 @@ def train(lr=0.01):
     """
     
     # Instantiate the policy model and the optimizer
-    model = Policy()
+    model = Policy(gae_labmda)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # Learning rate scheduler (optional)
-    # scheduler = Scheduler.StepLR(optimizer, step_size=200, gamma=0.9)
+    scheduler = Scheduler.StepLR(optimizer, step_size=200, gamma=0.9)
     
     # EWMA reward for tracking the learning progress
     ewma_reward = 0
@@ -269,7 +285,7 @@ def train(lr=0.01):
         loss = model.calculate_loss()
         loss.backward()
         optimizer.step()
-        # scheduler.step()
+        scheduler.step()
 
         model.clear_memory()
         
@@ -285,7 +301,7 @@ def train(lr=0.01):
         writer.add_scalar('Reward/ep_reward', ep_reward, i_episode)
         writer.add_scalar('Reward/ewma_reward', ewma_reward, i_episode)
         writer.add_scalar('Training/loss', loss, i_episode)
-        # writer.add_scalar('Training/learning rate', scheduler.get_lr()[0], i_episode)
+        writer.add_scalar('Training/learning rate', scheduler.get_lr()[0], i_episode)
 
         ########## END OF YOUR CODE ##########
 
@@ -293,21 +309,21 @@ def train(lr=0.01):
         if ewma_reward > 120:
             if not os.path.isdir("./preTrained"):
                 os.mkdir("./preTrained")
-            torch.save(model.state_dict(), './preTrained/gae_LunarLander-v2_{}.pth'.format(lr))
+            torch.save(model.state_dict(), './preTrained/gae_LunarLander-v2_lr{}_ld{}.pth'.format(lr, gae_labmda))
             print("Solved! Running reward is now {} and "
                   "the last episode runs to {} time steps!".format(ewma_reward, t))
             break
 
 
-def test(name, n_episodes=10):
+def test(name, gae_lambda, render_flag, n_episodes=10):
     """
         Test the learned model (no change needed)
     """     
-    model = Policy()
+    model = Policy(gae_lambda)
     
     model.load_state_dict(torch.load('./preTrained/{}'.format(name)))
     
-    render = True
+    render = render_flag
     max_episode_len = 10000
     
     for i_episode in range(1, n_episodes+1):
@@ -325,12 +341,23 @@ def test(name, n_episodes=10):
     env.close()
     
 
+def log_arguments(folder_name, args):
+    with open(f"./tb_record/reinforce_gae/{folder_name}/arguments.txt", 'w') as f:
+        f.write('random seed = {}\n'.format(args.seed))
+        f.write('learning rate = {}\n'.format(args.learnrate))
+        f.write('gae lambda = {}\n'.format(args.gaelambda))
+
+
 if __name__ == '__main__':
+    args = parse_args()
+    
+    log_arguments(folder_name, args)
+    
     # For reproducibility, fix the random seed
-    random_seed = 10  
-    lr = 0.0005
+    random_seed = args.seed
+    lr = args.learnrate
     env = gym.make('LunarLander-v2')
     env.seed(random_seed)  
     torch.manual_seed(random_seed)  
-    train(lr)
-    test(f'gae_LunarLander-v2_{lr}.pth')
+    # train(args.gaelambda, lr)
+    test(f'gae_LunarLander-v2_lr{lr}_ld{args.gaelambda}.pth', args.gaelambda, args.render)
