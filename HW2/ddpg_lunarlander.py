@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 # Define a tensorboard writer
 tb_folder_name = time.strftime("%m%d%Y_%H%M%S", time.localtime())
-writer = SummaryWriter("./tb_record/a/{}".format(tb_folder_name))
+writer = SummaryWriter("./tb_record/b/{}".format(tb_folder_name))
 device = 'cuda:0'
 
 def soft_update(target, source, tau):
@@ -347,13 +347,13 @@ def train():
             writer.add_scalar('Loss/value_loss', value_loss, i_episode)
             writer.add_scalar('Loss/policy_loss', policy_loss, i_episode)
     
-    agent.save_model('Pendulum-v1', '.pth')        
+    agent.save_model('LunarLanderContinuous-v2', '.pth')        
  
 
 if __name__ == '__main__':
     # For reproducibility, fix the random seed
     random_seed = 10  
-    env = gym.make('Pendulum-v1')
+    env = gym.make('LunarLanderContinuous-v2')
     env.seed(random_seed)  
     torch.manual_seed(random_seed)  
     train()
